@@ -3,6 +3,10 @@ name = "minecraft-regions-tool"
 version = "0.1.0"
 authors = ["trivernis <trivernis@protonmail.com>"]
 edition = "2018"
+license = "GPL-3.0"
+readme = "README.md"
+description = "A utility for minecraft region files"
+repository = "https://github.com/Trivernis/minecraft-regions-tool"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
