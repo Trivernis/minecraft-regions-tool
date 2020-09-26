@@ -1,22 +1,28 @@
 use crate::scan::ScanStatistics;
-use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
-use std::fs::File;
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt, WriteBytesExt};
+use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Result, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 
 const BLOCK_SIZE: usize = 4096;
 
 pub struct RegionFile {
     reader: BufReader<File>,
+    writer: BufWriter<File>,
     locations: Locations,
     #[allow(dead_code)]
     timestamps: Timestamps,
 }
 
 impl RegionFile {
-    pub fn new(reader: BufReader<File>) -> Result<Self> {
+    pub fn new(path: &PathBuf) -> Result<Self> {
+        let fr = OpenOptions::new().read(true).open(path)?;
+        let fw = OpenOptions::new().write(true).open(path)?;
+        let mut reader = BufReader::with_capacity(BLOCK_SIZE, fr);
+        let writer = BufWriter::with_capacity(2 * BLOCK_SIZE, fw);
+
         let mut locations_raw = [0u8; BLOCK_SIZE];
         let mut timestamps_raw = [0u8; BLOCK_SIZE];
-        let mut reader = reader;
         reader.read_exact(&mut locations_raw)?;
         reader.read_exact(&mut timestamps_raw)?;
 
@@ -24,15 +30,8 @@ impl RegionFile {
             locations: Locations::from_bytes(&locations_raw),
             timestamps: Timestamps::from_bytes(&timestamps_raw),
             reader,
+            writer,
         })
-    }
-
-    /// Writes a corrected version of the region file back to the disk
-    pub fn write(&self, writer: &mut BufWriter<File>) -> Result<()> {
-        let location_bytes = self.locations.to_bytes();
-        writer.write_all(&location_bytes.as_slice())?;
-
-        writer.flush()
     }
 
     /// Returns the number of chunks in the file
@@ -41,7 +40,7 @@ impl RegionFile {
     }
 
     /// Scans the chunk entries for possible errors
-    pub fn scan_chunks(&mut self) -> Result<ScanStatistics> {
+    pub fn scan_chunks(&mut self, fix: bool) -> Result<ScanStatistics> {
         let mut statistic = ScanStatistics::new();
 
         let entries = self.locations.valid_entries();
@@ -49,11 +48,21 @@ impl RegionFile {
         statistic.total_chunks = entries.len() as u64;
 
         for (offset, sections) in &entries {
-            self.reader
-                .seek(SeekFrom::Start(*offset as u64 * BLOCK_SIZE as u64))?;
+            let reader_offset = *offset as u64 * BLOCK_SIZE as u64;
+            self.reader.seek(SeekFrom::Start(reader_offset))?;
+
             match self.read_chunk() {
                 Ok(chunk) => {
                     let chunk_sections = ((chunk.length + 4) as f64 / BLOCK_SIZE as f64).ceil();
+
+                    if chunk.compression_type > 3 {
+                        statistic.invalid_compression_method += 1;
+                        if fix {
+                            self.writer.seek(SeekFrom::Start(reader_offset + 4))?;
+                            self.writer.write_u8(1)?;
+                        }
+                    }
+
                     if *sections != chunk_sections as u8 || chunk.length >= 1_048_576 {
                         statistic.invalid_length += 1;
                         corrected_entries.push((*offset, chunk_sections as u8));
@@ -62,11 +71,18 @@ impl RegionFile {
                     }
                 }
                 Err(e) => {
-                    println!("Failed to read chunk at {}: {}", offset, e);
+                    log::error!("Failed to read chunk at {}: {}", offset, e);
                 }
             }
         }
         self.locations.set_entries(corrected_entries);
+
+        if fix {
+            self.writer.seek(SeekFrom::Start(0))?;
+            self.writer
+                .write_all(self.locations.to_bytes().as_slice())?;
+            self.writer.flush()?;
+        }
 
         Ok(statistic)
     }

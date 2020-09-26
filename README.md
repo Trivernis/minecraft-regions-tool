@@ -3,7 +3,7 @@ A utility to perform operations on minecraft region files
 
 ## Usage
 
-```sh
+```
 USAGE:
     minecraft-regions-tool <input> <SUBCOMMAND>
 

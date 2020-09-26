@@ -1,14 +1,12 @@
 use crate::region_file::RegionFile;
 use crate::scan::ScanStatistics;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use log::LevelFilter;
 use rayon::prelude::*;
 use std::fs;
-use std::fs::{File, OpenOptions};
 use std::io;
-use std::io::{BufReader, BufWriter};
 use std::ops::Add;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 pub struct WorldFolder {
     path: PathBuf,
@@ -24,44 +22,47 @@ impl WorldFolder {
         let mut count = 0u64;
 
         for file in self.region_file_paths() {
-            let f = File::open(file)?;
-            let region_file = RegionFile::new(BufReader::new(f))?;
+            let region_file = RegionFile::new(&file)?;
             count += region_file.count_chunks() as u64;
         }
 
         Ok(count)
     }
 
-    pub fn scan_files(&self, fix: bool) -> io::Result<()> {
+    pub fn scan_files(&self, fix: bool) -> io::Result<ScanStatistics> {
         let paths = self.region_file_paths();
-        let bar = Arc::new(Mutex::new(ProgressBar::new(paths.len() as u64)));
-        bar.lock().unwrap().set_style(
-            ProgressStyle::default_bar().template("[{eta_precise}] {wide_bar} {pos}/{len} "),
+        let bar = ProgressBar::new(paths.len() as u64);
+        bar.set_style(
+            ProgressStyle::default_bar().template("\r[{eta_precise}] {wide_bar} {pos}/{len} "),
         );
+        if log::max_level() == LevelFilter::Debug {
+            bar.set_draw_target(ProgressDrawTarget::hidden())
+        }
+        bar.enable_steady_tick(1000);
 
         let statistic: ScanStatistics = paths
             .par_iter()
-            .filter_map(|file| {
-                let f = OpenOptions::new().read(true).open(file).ok()?;
-                let mut region_file = RegionFile::new(BufReader::new(f)).ok()?;
+            .filter_map(|path| {
+                log::debug!("Opening and scanning region file {:?}", path);
+                let mut region_file = RegionFile::new(path)
+                    .map_err(|e| {
+                        log::error!("Failed to open region file {:?}: {}", path, e);
 
-                let result = region_file.scan_chunks().ok()?;
-                if fix {
-                    let f = OpenOptions::new().write(true).open(file).ok()?;
-                    let mut writer = BufWriter::new(f);
-                    region_file.write(&mut writer).ok()?;
-                }
-                bar.lock().unwrap().inc(1);
+                        e
+                    })
+                    .ok()?;
+
+                let result = region_file.scan_chunks(fix).ok()?;
+                bar.inc(1);
+                log::debug!("Statistics for {:?}:\n{}", path, result);
 
                 Some(result)
             })
             .reduce(|| ScanStatistics::new(), |a, b| a.add(b));
 
-        bar.lock().unwrap().finish_and_clear();
+        bar.finish_and_clear();
 
-        println!("{}", statistic);
-
-        Ok(())
+        Ok(statistic)
     }
 
     /// Returns a list of region file paths for the world folder
