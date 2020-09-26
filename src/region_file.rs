@@ -1,10 +1,11 @@
+use crate::chunk::{Chunk, ChunkScanError};
 use crate::scan::ScanStatistics;
-use byteorder::{BigEndian, ByteOrder, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Result, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
-const BLOCK_SIZE: usize = 4096;
+pub const BLOCK_SIZE: usize = 4096;
 
 pub struct RegionFile {
     reader: BufReader<File>,
@@ -51,8 +52,8 @@ impl RegionFile {
             let reader_offset = *offset as u64 * BLOCK_SIZE as u64;
             self.reader.seek(SeekFrom::Start(reader_offset))?;
 
-            match self.read_chunk() {
-                Ok(chunk) => {
+            match Chunk::from_buf_reader(&mut self.reader, true) {
+                Ok(mut chunk) => {
                     let chunk_sections = ((chunk.length + 4) as f64 / BLOCK_SIZE as f64).ceil();
 
                     if chunk.compression_type > 3 {
@@ -60,6 +61,23 @@ impl RegionFile {
                         if fix {
                             self.writer.seek(SeekFrom::Start(reader_offset + 4))?;
                             self.writer.write_u8(1)?;
+                        }
+                    } else {
+                        if let Err(e) = chunk.validate_nbt_data() {
+                            match e {
+                                ChunkScanError::IO(e) => {
+                                    log::debug!(
+                                        "Compression error when reading chunk {}: {}",
+                                        offset,
+                                        e
+                                    );
+                                    statistic.corrupted_compression += 1;
+                                }
+                                _ => {
+                                    log::debug!("Missing nbt for chunk {}: {}", offset, e);
+                                    statistic.missing_nbt += 1;
+                                }
+                            }
                         }
                     }
 
@@ -71,6 +89,7 @@ impl RegionFile {
                     }
                 }
                 Err(e) => {
+                    statistic.failed_to_read += 1;
                     log::error!("Failed to read chunk at {}: {}", offset, e);
                 }
             }
@@ -85,25 +104,6 @@ impl RegionFile {
         }
 
         Ok(statistic)
-    }
-
-    /// Reads a chunk at the current location
-    fn read_chunk(&mut self) -> Result<Chunk> {
-        let mut length_raw = [0u8; 4];
-        self.reader.read_exact(&mut length_raw)?;
-        let length = BigEndian::read_u32(&length_raw);
-        let compression_type = self.reader.read_u8()?;
-
-        if length > 0 {
-            self.reader.seek(SeekFrom::Current((length - 1) as i64))?;
-        } else {
-            self.reader.seek(SeekFrom::Current((length) as i64))?;
-        }
-
-        Ok(Chunk {
-            length,
-            compression_type,
-        })
     }
 }
 
@@ -181,10 +181,4 @@ impl Timestamps {
 
         Self { inner: timestamps }
     }
-}
-
-#[derive(Debug)]
-pub struct Chunk {
-    pub length: u32,
-    pub compression_type: u8,
 }
