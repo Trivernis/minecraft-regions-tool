@@ -17,4 +17,5 @@ ARGS:
 SUBCOMMANDS:
     count    Return the total number of chunks in the world
     help     Prints this message or the help of the given subcommand(s)
+    scan     Scan for errors in the region files and optionally fix them
 ```
