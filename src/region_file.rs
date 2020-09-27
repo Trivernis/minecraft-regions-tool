@@ -96,11 +96,18 @@ impl RegionFile {
 
         if options.fix || options.fix_delete {
             let mut shifted = 0isize;
-            for (offset, amount) in shift_operations {
-                let offset = (offset as isize + shifted) as usize;
-                self.shift_right(offset, amount)?;
-                self.locations.shift_entries(offset as u32, amount as i32);
-                shifted += amount;
+
+            let mut operations = shift_operations.iter().peekable();
+            while let Some((offset, amount)) = operations.next() {
+                shifted += *amount;
+                let end_offset = if let Some((o, a)) = operations.peek() {
+                    (*o as isize + *a) as usize
+                } else {
+                    self.locations.max_offset() as usize
+                };
+                self.shift_right(*offset, end_offset, shifted)?;
+                self.locations
+                    .shift_entries(*offset as u32, end_offset as u32, shifted as i32);
             }
             statistic.shrunk_size = self.locations.estimated_size();
             self.writer.seek(SeekFrom::Start(0))?;
@@ -181,16 +188,29 @@ impl RegionFile {
     }
 
     /// Shifts the file from the `offset` position `amount` blocks to the right
-    pub fn shift_right(&mut self, offset: usize, amount: isize) -> Result<()> {
+    pub fn shift_right(
+        &mut self,
+        start_offset: usize,
+        end_offset: usize,
+        amount: isize,
+    ) -> Result<()> {
+        log::debug!(
+            "Shifting chunk blocks starting from {} by {} until {}",
+            start_offset,
+            amount,
+            end_offset,
+        );
         self.reader
-            .seek(SeekFrom::Start((offset * BLOCK_SIZE) as u64))?;
-        self.writer.seek(SeekFrom::Start(
-            ((offset as isize + amount) as usize * BLOCK_SIZE) as u64,
-        ))?;
-        loop {
+            .seek(SeekFrom::Start((start_offset * BLOCK_SIZE) as u64))?;
+        self.writer
+            .seek(SeekFrom::Start((start_offset * BLOCK_SIZE) as u64))?;
+        self.writer
+            .seek(SeekFrom::Current(amount as i64 * BLOCK_SIZE as i64))?;
+        for _ in 0..(end_offset - start_offset) {
             let mut buf = [0u8; BLOCK_SIZE];
             let read = self.reader.read(&mut buf)?;
             self.writer.write(&buf)?;
+
             if read < BLOCK_SIZE {
                 break;
             }
@@ -260,8 +280,8 @@ impl Locations {
             .collect()
     }
 
-    /// Returns the estimated of all chunks combined including the header
-    pub fn estimated_size(&self) -> u64 {
+    /// The maximum offset in the file
+    pub fn max_offset(&self) -> u32 {
         let largest = self
             .inner
             .iter()
@@ -277,7 +297,12 @@ impl Locations {
             .cloned()
             .unwrap_or((2, 0));
 
-        (largest.0 as u64 + largest.1 as u64) * BLOCK_SIZE as u64
+        largest.0 + largest.1 as u32
+    }
+
+    /// Returns the estimated of all chunks combined including the header
+    pub fn estimated_size(&self) -> u64 {
+        self.max_offset() as u64 * BLOCK_SIZE as u64
     }
 
     /// Replaces an entry with a new one. Panics if the index doesn't exist
@@ -296,11 +321,12 @@ impl Locations {
     }
 
     /// Shifts all entries starting from `start_index` by `amount`
-    pub fn shift_entries(&mut self, start_offset: u32, amount: i32) {
+    pub fn shift_entries(&mut self, start_offset: u32, end_offset: u32, amount: i32) {
         log::debug!(
-            "Shifting location entries starting from {} by {}",
+            "Shifting location entries starting from {} by {} until {}",
             start_offset,
-            amount
+            amount,
+            end_offset
         );
         self.inner = self
             .inner
@@ -308,7 +334,7 @@ impl Locations {
             .map(|e| {
                 let mut entry = *e;
 
-                if e.0 >= start_offset {
+                if e.0 >= start_offset && e.0 <= end_offset {
                     entry.0 = (entry.0 as i32 + amount) as u32;
                 }
 
