@@ -64,3 +64,30 @@ impl Display for ScanStatistics {
         )
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct ScanOptions {
+    pub fix: bool,
+    pub fix_delete: bool,
+}
+
+impl ScanOptions {
+    pub fn new() -> Self {
+        ScanOptions {
+            fix: false,
+            fix_delete: false,
+        }
+    }
+
+    pub fn fix(mut self, fix: bool) -> Self {
+        self.fix = fix;
+
+        self
+    }
+
+    pub fn fix_delete(mut self, fix_delete: bool) -> Self {
+        self.fix_delete = fix_delete;
+
+        self
+    }
+}

@@ -1,13 +1,14 @@
+use crate::utils::ByteArrayCache;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::io::{self, Read};
+use std::io::{self};
 
 const MAX_RECURSION: u64 = 100;
 
 pub struct NBTReader<R> {
-    inner: Box<R>,
+    inner: R,
     recursion: u64,
 }
 
@@ -19,7 +20,7 @@ where
 {
     pub fn new(inner: R) -> Self {
         Self {
-            inner: Box::new(inner),
+            inner,
             recursion: 0,
         }
     }
@@ -73,13 +74,14 @@ where
     }
 
     /// Parses an array of bytes
-    fn parse_byte_array(&mut self) -> NBTResult<Vec<u8>> {
+    fn parse_byte_array(&mut self) -> NBTResult<ByteArrayCache> {
         let length = self.inner.read_u32::<BigEndian>()?;
-        for _ in 0..length {
-            self.inner.read_u8()?;
-        }
+        let mut cache = ByteArrayCache::new();
+        let mut buf = vec![0u8; length as usize];
+        self.inner.read_exact(&mut buf)?;
+        cache.write(&buf[..])?;
 
-        Ok(Vec::with_capacity(0))
+        Ok(cache)
     }
 
     /// Parses a string value
@@ -155,7 +157,7 @@ pub enum NBTValue {
     Long(i64),
     Float(f32),
     Double(f64),
-    ByteArray(Vec<u8>),
+    ByteArray(ByteArrayCache),
     String(String),
     List(Vec<NBTValue>),
     Compound(HashMap<String, NBTValue>),

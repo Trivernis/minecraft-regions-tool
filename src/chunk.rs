@@ -11,6 +11,7 @@ type IOResult<T> = io::Result<T>;
 const TAG_LEVEL: &str = "Level";
 const TAG_X_POS: &str = "xPos";
 const TAG_Z_POS: &str = "zPos";
+const TAG_SECTIONS: &str = "Sections";
 
 #[derive(Debug)]
 pub struct Chunk {
@@ -54,8 +55,15 @@ impl Chunk {
                     Err(ChunkScanError::MissingTag(TAG_X_POS))
                 } else if !lvl_data.contains_key(TAG_Z_POS) {
                     Err(ChunkScanError::MissingTag(TAG_Z_POS))
+                } else if !lvl_data.contains_key(TAG_SECTIONS) {
+                    Err(ChunkScanError::MissingTag(TAG_SECTIONS))
                 } else {
-                    Ok(())
+                    let sections = &lvl_data[TAG_SECTIONS];
+                    if let NBTValue::List(_) = sections {
+                        Ok(())
+                    } else {
+                        Err(ChunkScanError::InvalidFormat(TAG_SECTIONS))
+                    }
                 }
             } else {
                 Err(ChunkScanError::InvalidFormat(TAG_LEVEL))

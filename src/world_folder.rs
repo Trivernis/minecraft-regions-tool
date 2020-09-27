@@ -1,4 +1,5 @@
 use crate::region_file::RegionFile;
+use crate::scan::ScanOptions;
 use crate::scan::ScanStatistics;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use log::LevelFilter;
@@ -7,6 +8,7 @@ use std::fs;
 use std::io;
 use std::ops::Add;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub struct WorldFolder {
     path: PathBuf,
@@ -29,9 +31,11 @@ impl WorldFolder {
         Ok(count)
     }
 
-    pub fn scan_files(&self, fix: bool) -> io::Result<ScanStatistics> {
+    /// Scans all region files for potential errors
+    pub fn scan_files(&self, options: ScanOptions) -> io::Result<ScanStatistics> {
         let paths = self.region_file_paths();
         let bar = ProgressBar::new(paths.len() as u64);
+        let options = Arc::new(options);
         bar.set_style(
             ProgressStyle::default_bar().template("\r[{eta_precise}] {wide_bar} {pos}/{len} "),
         );
@@ -46,13 +50,18 @@ impl WorldFolder {
                 log::debug!("Opening and scanning region file {:?}", path);
                 let mut region_file = RegionFile::new(path)
                     .map_err(|e| {
-                        log::error!("Failed to open region file {:?}: {}", path, e);
+                        log::error!("Failed to open region file {:?}: {}\n", path, e);
+                        if options.fix_delete {
+                            if let Err(e) = fs::remove_file(path) {
+                                return e;
+                            }
+                        }
 
                         e
                     })
                     .ok()?;
 
-                let result = region_file.scan_chunks(fix).ok()?;
+                let result = region_file.scan_chunks(&options).ok()?;
                 bar.inc(1);
                 log::debug!("Statistics for {:?}:\n{}", path, result);
 

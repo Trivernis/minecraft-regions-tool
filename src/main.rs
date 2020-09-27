@@ -1,6 +1,7 @@
 use colored::*;
 use env_logger::Env;
 use log::Level;
+use minecraft_regions_tool::scan::ScanOptions;
 use minecraft_regions_tool::world_folder::WorldFolder;
 use std::path::PathBuf;
 use structopt::StructOpt;
@@ -26,14 +27,19 @@ enum SubCommand {
     Count,
 
     /// Scan for errors in the region files and optionally fix them
-    Scan(ScanOptions),
+    Scan(ScanArgs),
 }
 
 #[derive(StructOpt, Debug)]
 #[structopt()]
-struct ScanOptions {
+struct ScanArgs {
+    /// Fixes errors that can be fixed without problems
     #[structopt(short, long)]
     fix: bool,
+
+    /// Deletes corrupted data
+    #[structopt(short, long)]
+    delete: bool,
 }
 
 fn main() {
@@ -47,7 +53,12 @@ fn main() {
                 log::info!("Fixing fixable errors.");
             }
             log::info!("Scanning Region files for errors...");
-            log::info!("Scan Results:\n{}", world.scan_files(opt.fix).unwrap())
+            log::info!(
+                "Scan Results:\n{}",
+                world
+                    .scan_files(ScanOptions::new().fix(opt.fix).fix_delete(opt.delete))
+                    .unwrap()
+            )
         }
     }
 }
