@@ -5,6 +5,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use log::LevelFilter;
 use rayon::prelude::*;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io;
 use std::ops::Add;
 use std::path::PathBuf;
@@ -62,6 +63,10 @@ impl WorldFolder {
                     .ok()?;
 
                 let result = region_file.scan_chunks(&options).ok()?;
+                if options.fix && result.shrunk_size > 0 {
+                    let f = OpenOptions::new().read(true).write(true).open(path).ok()?;
+                    f.set_len(result.shrunk_size).ok()?;
+                }
                 bar.inc(1);
                 log::debug!("Statistics for {:?}:\n{}", path, result);
 
