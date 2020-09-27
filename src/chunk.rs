@@ -1,11 +1,10 @@
 use crate::nbt::{NBTError, NBTReader, NBTValue};
-use crate::region_file::BLOCK_SIZE;
-use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use byteorder::{BigEndian, ReadBytesExt};
 
-use flate2::bufread::ZlibDecoder;
+use crate::region_file::BLOCK_SIZE;
+use flate2::read::ZlibDecoder;
 use std::fmt::{Display, Formatter};
-use std::fs::File;
-use std::io::{self, BufReader, Error, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Error};
 
 type IOResult<T> = io::Result<T>;
 
@@ -17,48 +16,33 @@ const TAG_Z_POS: &str = "zPos";
 pub struct Chunk {
     pub length: u32,
     pub compression_type: u8,
-    nbt_raw: Vec<u8>,
 }
 
 impl Chunk {
-    pub fn from_buf_reader(reader: &mut BufReader<File>, include_nbt: bool) -> IOResult<Self> {
-        let mut length_raw = [0u8; 4];
-        reader.read_exact(&mut length_raw)?;
-        let length = BigEndian::read_u32(&length_raw);
+    pub fn from_buf_reader<R: io::Read + io::Seek>(reader: &mut R) -> IOResult<Self> {
+        let length = reader.read_u32::<BigEndian>()?;
+        if length > 128 * BLOCK_SIZE as u32 {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
         let compression_type = reader.read_u8()?;
-
-        let mut nbt_raw = Vec::new();
-        if include_nbt {
-            for _ in 0..((length - 1) as f32 / BLOCK_SIZE as f32).ceil() as u8 {
-                let mut buffer = [0u8; BLOCK_SIZE];
-                reader.read(&mut buffer)?;
-                nbt_raw.append(&mut buffer.to_vec());
-            }
-            nbt_raw.truncate((length - 1) as usize);
-        }
-
-        if length > 0 {
-            reader.seek(SeekFrom::Current((length - 1) as i64))?;
-        } else {
-            reader.seek(SeekFrom::Current((length) as i64))?;
-        }
 
         Ok(Self {
             compression_type,
             length,
-            nbt_raw,
         })
     }
 
-    pub fn validate_nbt_data(&mut self) -> Result<(), ChunkScanError> {
-        if self.compression_type == 2 {
-            let mut decoder = ZlibDecoder::new(&self.nbt_raw[..]);
-            let mut data = Vec::new();
-            decoder.read_to_end(&mut data)?;
-            self.nbt_raw = data;
-        }
-        let mut reader = NBTReader::new(&self.nbt_raw[..]);
-        let data = reader.parse()?;
+    pub fn validate_nbt_data<R: io::Read + io::Seek>(
+        &mut self,
+        reader: &mut R,
+    ) -> Result<(), ChunkScanError> {
+        let data = if self.compression_type == 2 {
+            let mut nbt_reader = NBTReader::new(BufReader::new(ZlibDecoder::new(reader)));
+            nbt_reader.parse()?
+        } else {
+            let mut nbt_reader = NBTReader::new(reader);
+            nbt_reader.parse()?
+        };
 
         if !data.contains_key(TAG_LEVEL) {
             Err(ChunkScanError::MissingTag(TAG_LEVEL))
@@ -87,6 +71,7 @@ pub enum ChunkScanError {
     NBTError(NBTError),
     MissingTag(&'static str),
     InvalidFormat(&'static str),
+    InvalidLength(u32),
 }
 
 impl Display for ChunkScanError {
@@ -97,6 +82,7 @@ impl Display for ChunkScanError {
             Self::NBTError(nbt) => write!(f, "NBT Error: {}", nbt),
             Self::MissingTag(tag) => write!(f, "Missing Tag in NBT Data: {}", tag),
             Self::InvalidFormat(tag) => write!(f, "Unexpected data format for NBT Tag {}", tag),
+            Self::InvalidLength(length) => write!(f, "Invalid chunk data length: {}", length),
         }
     }
 }

@@ -52,7 +52,7 @@ impl RegionFile {
             let reader_offset = *offset as u64 * BLOCK_SIZE as u64;
             self.reader.seek(SeekFrom::Start(reader_offset))?;
 
-            match Chunk::from_buf_reader(&mut self.reader, true) {
+            match Chunk::from_buf_reader(&mut self.reader) {
                 Ok(mut chunk) => {
                     let chunk_sections = ((chunk.length + 4) as f64 / BLOCK_SIZE as f64).ceil();
 
@@ -63,7 +63,8 @@ impl RegionFile {
                             self.writer.write_u8(1)?;
                         }
                     } else {
-                        if let Err(e) = chunk.validate_nbt_data() {
+                        self.reader.seek(SeekFrom::Start(reader_offset + 5))?;
+                        if let Err(e) = chunk.validate_nbt_data(&mut self.reader) {
                             match e {
                                 ChunkScanError::IO(e) => {
                                     log::debug!(
@@ -73,8 +74,12 @@ impl RegionFile {
                                     );
                                     statistic.corrupted_compression += 1;
                                 }
+                                ChunkScanError::NBTError(e) => {
+                                    log::debug!("Corrupted nbt data for chunk {}: {}", offset, e);
+                                    statistic.corrupted_nbt += 1;
+                                }
                                 _ => {
-                                    log::debug!("Missing nbt for chunk {}: {}", offset, e);
+                                    log::debug!("Missing nbt data for chunk {}: {}", offset, e);
                                     statistic.missing_nbt += 1;
                                 }
                             }

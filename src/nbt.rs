@@ -4,8 +4,11 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read};
 
+const MAX_RECURSION: u64 = 100;
+
 pub struct NBTReader<R> {
     inner: Box<R>,
+    recursion: u64,
 }
 
 type NBTResult<T> = Result<T, NBTError>;
@@ -17,6 +20,7 @@ where
     pub fn new(inner: R) -> Self {
         Self {
             inner: Box::new(inner),
+            recursion: 0,
         }
     }
 
@@ -27,13 +31,18 @@ where
         if tag != 10 {
             return Err(NBTError::MissingRootTag);
         }
-        let _ = self.parse_string()?;
+        let mut buf = [0u8; 2];
+        self.inner.read(&mut buf)?;
 
         self.parse_compound()
     }
 
     /// Parses a compound tag
     fn parse_compound(&mut self) -> NBTResult<HashMap<String, NBTValue>> {
+        self.recursion += 1;
+        if self.recursion > MAX_RECURSION {
+            return Err(NBTError::RecursionError);
+        }
         let mut root_value = HashMap::new();
         loop {
             let tag = self.inner.read_u8()?;
@@ -59,17 +68,18 @@ where
             };
             root_value.insert(name, value);
         }
-
+        self.recursion -= 1;
         Ok(root_value)
     }
 
     /// Parses an array of bytes
     fn parse_byte_array(&mut self) -> NBTResult<Vec<u8>> {
         let length = self.inner.read_u32::<BigEndian>()?;
-        let mut buf = Vec::with_capacity(length as usize);
-        self.inner.read_exact(&mut buf)?;
+        for _ in 0..length {
+            self.inner.read_u8()?;
+        }
 
-        Ok(buf)
+        Ok(Vec::with_capacity(0))
     }
 
     /// Parses a string value
@@ -78,10 +88,8 @@ where
         if length == 0 {
             return Ok(String::new());
         }
-        let mut buf = Vec::with_capacity(length as usize);
-        for _ in 0..length {
-            buf.push(self.inner.read_u8()?);
-        }
+        let mut buf = vec![0u8; length as usize];
+        self.inner.read_exact(&mut buf)?;
 
         String::from_utf8(buf).map_err(|_| NBTError::InvalidName)
     }
@@ -161,6 +169,7 @@ pub enum NBTError {
     MissingRootTag,
     InvalidTag(u8),
     InvalidName,
+    RecursionError,
 }
 
 impl Display for NBTError {
@@ -170,6 +179,7 @@ impl Display for NBTError {
             Self::InvalidTag(tag) => write!(f, "Invalid Tag: 0x{:x}", tag),
             Self::MissingRootTag => write!(f, "Missing root tag!"),
             Self::InvalidName => write!(f, "Encountered invalid tag name"),
+            Self::RecursionError => write!(f, "Reached recursion limit"),
         }
     }
 }
