@@ -66,6 +66,13 @@ impl RegionFile {
             let reader_offset = offset as u64 * BLOCK_SIZE as u64;
             self.reader.seek(SeekFrom::Start(reader_offset))?;
 
+            let offset_diff = offset - (previous_offset + previous_sections);
+            if offset_diff > 0 {
+                statistic.unused_space += (BLOCK_SIZE * offset_diff as usize) as u64;
+                if options.fix {
+                    shift_operations.push((offset as usize, -(offset_diff as isize)));
+                }
+            }
             match Chunk::from_buf_reader(&mut self.reader) {
                 Ok(chunk) => {
                     let exists =
@@ -77,19 +84,15 @@ impl RegionFile {
                 }
                 Err(e) => {
                     statistic.failed_to_read += 1;
+                    log::error!("Failed to read chunk at {}: {}", offset, e);
                     if options.fix_delete {
                         self.delete_chunk(index)?;
+                        shift_operations
+                            .push((offset as usize + sections as usize, -(sections as isize)));
                     }
-                    log::error!("Failed to read chunk at {}: {}", offset, e);
                 }
             }
-            let offset_diff = offset - (previous_offset + previous_sections);
-            if offset_diff > 0 {
-                statistic.unused_space += (BLOCK_SIZE * offset_diff as usize) as u64;
-                if options.fix {
-                    shift_operations.push((offset as usize, -(offset_diff as isize)));
-                }
-            }
+
             previous_offset = offset;
             previous_sections = sections as u32;
         }
@@ -175,14 +178,10 @@ impl RegionFile {
 
     /// Deletes a chunk and shifts all other chunks
     pub fn delete_chunk(&mut self, index: usize) -> Result<()> {
-        let (offset, sections) = self.locations.get_chunk_entry_unchecked(index);
-
         log::debug!(
-            "Shifting chunk entries starting from {} by {} to the left",
-            offset,
-            sections as u32
+            "Deleting chunk at {}",
+            self.locations.get_chunk_entry_unchecked(index).0
         );
-
         self.locations.delete_chunk_entry_unchecked(index);
         Ok(())
     }
@@ -217,6 +216,11 @@ impl RegionFile {
         }
 
         Ok(())
+    }
+
+    /// Closes the region file by flushing the writer
+    pub fn close(&mut self) -> Result<()> {
+        self.writer.flush()
     }
 }
 

@@ -1,17 +1,13 @@
 use crate::nbt::{NBTError, NBTReader, NBTValue};
 use byteorder::{BigEndian, ReadBytesExt};
 
+use crate::constants::tags::{LEVEL_TAGS, TAG_LEVEL};
 use crate::region_file::BLOCK_SIZE;
-use flate2::read::ZlibDecoder;
+use flate2::read::{GzDecoder, ZlibDecoder};
 use std::fmt::{Display, Formatter};
 use std::io::{self, BufReader, Error};
 
 type IOResult<T> = io::Result<T>;
-
-const TAG_LEVEL: &str = "Level";
-const TAG_X_POS: &str = "xPos";
-const TAG_Z_POS: &str = "zPos";
-const TAG_SECTIONS: &str = "Sections";
 
 #[derive(Debug)]
 pub struct Chunk {
@@ -22,7 +18,7 @@ pub struct Chunk {
 impl Chunk {
     pub fn from_buf_reader<R: io::Read + io::Seek>(reader: &mut R) -> IOResult<Self> {
         let length = reader.read_u32::<BigEndian>()?;
-        if length > 128 * BLOCK_SIZE as u32 {
+        if length > 128 * BLOCK_SIZE as u32 || length == 0 {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         let compression_type = reader.read_u8()?;
@@ -37,7 +33,10 @@ impl Chunk {
         &mut self,
         reader: &mut R,
     ) -> Result<(), ChunkScanError> {
-        let data = if self.compression_type == 2 {
+        let data = if self.compression_type == 1 {
+            let mut nbt_reader = NBTReader::new(BufReader::new(GzDecoder::new(reader)));
+            nbt_reader.parse()?
+        } else if self.compression_type == 2 {
             let mut nbt_reader = NBTReader::new(BufReader::new(ZlibDecoder::new(reader)));
             nbt_reader.parse()?
         } else {
@@ -51,20 +50,12 @@ impl Chunk {
             let lvl_data = &data[TAG_LEVEL];
 
             if let NBTValue::Compound(lvl_data) = lvl_data {
-                if !lvl_data.contains_key(TAG_X_POS) {
-                    Err(ChunkScanError::MissingTag(TAG_X_POS))
-                } else if !lvl_data.contains_key(TAG_Z_POS) {
-                    Err(ChunkScanError::MissingTag(TAG_Z_POS))
-                } else if !lvl_data.contains_key(TAG_SECTIONS) {
-                    Err(ChunkScanError::MissingTag(TAG_SECTIONS))
-                } else {
-                    let sections = &lvl_data[TAG_SECTIONS];
-                    if let NBTValue::List(_) = sections {
-                        Ok(())
-                    } else {
-                        Err(ChunkScanError::InvalidFormat(TAG_SECTIONS))
+                for tag in LEVEL_TAGS {
+                    if !lvl_data.contains_key(*tag) {
+                        return Err(ChunkScanError::MissingTag(tag));
                     }
                 }
+                Ok(())
             } else {
                 Err(ChunkScanError::InvalidFormat(TAG_LEVEL))
             }

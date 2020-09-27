@@ -1,4 +1,5 @@
 pub mod chunk;
+pub mod constants;
 pub mod nbt;
 pub mod region_file;
 pub mod scan;
