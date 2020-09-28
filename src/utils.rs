@@ -25,6 +25,7 @@ impl ByteArrayCache {
         }
     }
 
+    /// Write the data to the inner buffer by using compression
     pub fn write<R: Read>(&mut self, reader: R) -> Result<()> {
         let mut encoder = ZlibEncoder::new(reader, Compression::default());
         let mut buffer = Vec::new();

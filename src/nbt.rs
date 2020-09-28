@@ -1,5 +1,6 @@
 use crate::utils::ByteArrayCache;
 use byteorder::{BigEndian, ReadBytesExt};
+use enum_as_inner::EnumAsInner;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -76,6 +77,7 @@ where
     /// Parses an array of bytes
     fn parse_byte_array(&mut self) -> NBTResult<ByteArrayCache> {
         let length = self.inner.read_u32::<BigEndian>()?;
+        // store the data of the byte array in a compressed byte array cache to save memory
         let mut cache = ByteArrayCache::new();
         let mut buf = vec![0u8; length as usize];
         self.inner.read_exact(&mut buf)?;
@@ -148,7 +150,7 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, EnumAsInner)]
 pub enum NBTValue {
     Null,
     Byte(u8),

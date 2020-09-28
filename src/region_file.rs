@@ -11,17 +11,20 @@ use std::sync::Arc;
 pub const BLOCK_SIZE: usize = 4096;
 
 pub struct RegionFile {
+    path: PathBuf,
     reader: BufReader<File>,
     writer: BufWriter<File>,
     locations: Locations,
     #[allow(dead_code)]
     timestamps: Timestamps,
+    length: u64,
 }
 
 impl RegionFile {
     pub fn new(path: &PathBuf) -> Result<Self> {
         let fr = OpenOptions::new().read(true).open(path)?;
         let fw = OpenOptions::new().write(true).open(path)?;
+        let file_size = fr.metadata()?.len();
         let mut reader = BufReader::with_capacity(BLOCK_SIZE, fr);
         let writer = BufWriter::with_capacity(2 * BLOCK_SIZE, fw);
 
@@ -31,10 +34,12 @@ impl RegionFile {
         reader.read_exact(&mut timestamps_raw)?;
 
         Ok(Self {
+            path: path.clone(),
             locations: Locations::from_bytes(&locations_raw),
             timestamps: Timestamps::from_bytes(&timestamps_raw),
             reader,
             writer,
+            length: file_size,
         })
     }
 
@@ -63,20 +68,44 @@ impl RegionFile {
         let mut previous_sections = 0;
 
         for (index, (offset, sections)) in entries {
+            // Calculate and seek to the start of the chunk
             let reader_offset = offset as u64 * BLOCK_SIZE as u64;
             self.reader.seek(SeekFrom::Start(reader_offset))?;
 
-            let offset_diff = offset - (previous_offset + previous_sections);
+            let offset_diff = offset as i32 - (previous_offset as i32 + previous_sections as i32);
+            // Check if there is wasted space between the chunks
+            // since the chunks are iterated ordered by offset the previous chunk is the closest
             if offset_diff > 0 {
                 statistic.unused_space += (BLOCK_SIZE * offset_diff as usize) as u64;
+                log::debug!(
+                    "Gap of unused {:.2} KiB detected between {} and {}",
+                    (BLOCK_SIZE as f32 * offset_diff as f32) / 1024.0,
+                    previous_offset,
+                    offset
+                );
                 if options.fix {
                     shift_operations.push((offset as usize, -(offset_diff as isize)));
                 }
+            }
+            // Check if the chunk is longer than the file
+            if offset < 2 || self.length < (offset + sections as u32) as u64 * BLOCK_SIZE as u64 {
+                statistic.invalid_chunk_pointer += 1;
+                log::debug!(
+                    "Invalid chunk offset and sections at index {}: {} + {}",
+                    index,
+                    offset,
+                    sections
+                );
+                if options.fix_delete {
+                    self.delete_chunk(index)?;
+                }
+                continue;
             }
             match Chunk::from_buf_reader(&mut self.reader) {
                 Ok(chunk) => {
                     let exists =
                         self.scan_chunk(index, offset, sections, chunk, &mut statistic, options)?;
+                    // If scan_chunk returns false the chunk entry was deleted
                     if !exists && options.fix {
                         shift_operations
                             .push((offset as usize + sections as usize, -(sections as isize)))
@@ -84,7 +113,12 @@ impl RegionFile {
                 }
                 Err(e) => {
                     statistic.failed_to_read += 1;
-                    log::error!("Failed to read chunk at {}: {}", offset, e);
+                    log::error!(
+                        "Failed to read chunk at {} in {:?}: {}",
+                        offset,
+                        self.path,
+                        e
+                    );
                     if options.fix_delete {
                         self.delete_chunk(index)?;
                         shift_operations
@@ -98,20 +132,9 @@ impl RegionFile {
         }
 
         if options.fix || options.fix_delete {
-            let mut shifted = 0isize;
+            self.perform_shift_operations(shift_operations)?;
 
-            let mut operations = shift_operations.iter().peekable();
-            while let Some((offset, amount)) = operations.next() {
-                shifted += *amount;
-                let end_offset = if let Some((o, a)) = operations.peek() {
-                    (*o as isize + *a) as usize
-                } else {
-                    self.locations.max_offset() as usize
-                };
-                self.shift_right(*offset, end_offset, shifted)?;
-                self.locations
-                    .shift_entries(*offset as u32, end_offset as u32, shifted as i32);
-            }
+            // The new size of the file is the estimated size based on the highest chunk offset + sections
             statistic.shrunk_size = self.locations.estimated_size();
             self.writer.seek(SeekFrom::Start(0))?;
             self.writer
@@ -120,6 +143,47 @@ impl RegionFile {
         }
 
         Ok(statistic)
+    }
+
+    /// Performs shift operations defined in the shift_operations vector
+    fn perform_shift_operations(
+        &mut self,
+        mut shift_operations: Vec<(usize, isize)>,
+    ) -> Result<()> {
+        // sort the shift operations by resulting offset to have them in the right order
+        shift_operations.sort_by(|(o1, a1), (o2, a2)| {
+            let to_offset1 = *o1 as isize + *a1;
+            let to_offset2 = *o2 as isize + *a2;
+            if to_offset1 > to_offset1 {
+                Ordering::Greater
+            } else if to_offset1 < to_offset2 {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        });
+        let mut shifted = 0isize;
+
+        // perform shifting of chunks to close gaps between them
+        let mut operations = shift_operations.iter().peekable();
+
+        while let Some((offset, amount)) = operations.next() {
+            shifted += *amount;
+            let end_offset = if let Some((o, a)) = operations.peek() {
+                (*o as isize + *a) as usize
+            } else {
+                self.locations.max_offset() as usize
+            };
+            if *offset > end_offset {
+                log::error!("Invalid shift ({} - {}) -> {}", offset, end_offset, shifted);
+                break;
+            }
+            self.shift_right(*offset, end_offset, shifted)?;
+            self.locations
+                .shift_entries(*offset as u32, end_offset as u32, shifted as i32);
+        }
+
+        Ok(())
     }
 
     /// Scans a single chunk for errors
@@ -135,6 +199,10 @@ impl RegionFile {
         let chunk_sections = ((chunk.length + 4) as f64 / BLOCK_SIZE as f64).ceil();
         let reader_offset = offset as u64 * BLOCK_SIZE as u64;
 
+        // Valid compression types are:
+        // 0 - uncompressed
+        // 1 - GZIP
+        // 2 - ZLIB
         if chunk.compression_type > 3 {
             statistic.invalid_compression_method += 1;
             if options.fix {
@@ -142,7 +210,9 @@ impl RegionFile {
                 self.writer.write_u8(1)?;
             }
         } else {
+            // seek to the start of the actual chunk data
             self.reader.seek(SeekFrom::Start(reader_offset + 5))?;
+
             if let Err(e) = chunk.validate_nbt_data(&mut self.reader) {
                 match e {
                     ChunkScanError::IO(e) => {
@@ -161,6 +231,21 @@ impl RegionFile {
                 if options.fix_delete {
                     self.delete_chunk(index)?;
                     return Ok(false);
+                }
+            } else {
+                // validate that the chunk is the one the index should be pointing at
+                if let Some(x) = chunk.x_pos {
+                    if let Some(z) = chunk.z_pos {
+                        if get_chunk_index(x as isize, z as isize) != index {
+                            statistic.invalid_chunk_pointer += 1;
+                            log::debug!("Pointer {} pointing to wrong chunk ({},{})", index, x, z);
+
+                            if options.fix_delete {
+                                // Delete the entry of the chunk from the locations table
+                                self.delete_chunk(index)?;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -199,13 +284,18 @@ impl RegionFile {
             amount,
             end_offset,
         );
+        // seek to the start of the data to be shifted
         self.reader
             .seek(SeekFrom::Start((start_offset * BLOCK_SIZE) as u64))?;
+        // seek to the start of the data to be shifted
         self.writer
             .seek(SeekFrom::Start((start_offset * BLOCK_SIZE) as u64))?;
+        // seek the amount the data should be shifted
         self.writer
             .seek(SeekFrom::Current(amount as i64 * BLOCK_SIZE as i64))?;
+
         for _ in 0..(end_offset - start_offset) {
+            // since the offset is based on the fixed BLOCK_SIZE we can use that as our buffer size
             let mut buf = [0u8; BLOCK_SIZE];
             let read = self.reader.read(&mut buf)?;
             self.writer.write(&buf)?;
@@ -234,6 +324,7 @@ impl Locations {
         let mut locations = Vec::new();
 
         for i in (0..BLOCK_SIZE - 1).step_by(4) {
+            // construct a 4-byte number from 3 bytes
             let offset_raw = [0u8, bytes[i], bytes[i + 1], bytes[i + 2]];
             let offset = BigEndian::read_u32(&offset_raw);
             let count = bytes[i + 3];
@@ -258,15 +349,13 @@ impl Locations {
     }
 
     /// Returns the offset of a chunk
-    pub fn get_chunk_offset(&self, x: usize, z: usize) -> Option<u32> {
-        let index = x % 32 + (z % 32) * 32;
-        self.inner.get(index).map(|e| (*e).0)
+    pub fn get_chunk_offset(&self, x: isize, z: isize) -> Option<u32> {
+        self.inner.get(get_chunk_index(x, z)).map(|e| (*e).0)
     }
 
     /// Returns the number of sectors for a chunk
-    pub fn get_chunk_sectors(&self, x: usize, z: usize) -> Option<u8> {
-        let index = x % 32 + (z % 32) * 32;
-        self.inner.get(index).map(|e| (*e).1)
+    pub fn get_chunk_sectors(&self, x: isize, z: isize) -> Option<u8> {
+        self.inner.get(get_chunk_index(x, z)).map(|e| (*e).1)
     }
 
     /// Returns chunk entry list
@@ -363,4 +452,18 @@ impl Timestamps {
 
         Self { inner: timestamps }
     }
+}
+
+#[inline]
+fn get_chunk_index(x: isize, z: isize) -> usize {
+    let mut x = x % 32;
+    let mut z = z % 32;
+    if x < 0 {
+        x += 32;
+    }
+    if z < 0 {
+        z += 32;
+    }
+
+    x as usize + z as usize * 32
 }

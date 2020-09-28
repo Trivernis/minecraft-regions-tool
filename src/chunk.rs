@@ -1,7 +1,7 @@
 use crate::nbt::{NBTError, NBTReader, NBTValue};
 use byteorder::{BigEndian, ReadBytesExt};
 
-use crate::constants::tags::{LEVEL_TAGS, TAG_LEVEL};
+use crate::constants::tags::{LEVEL_TAGS, TAG_LEVEL, TAG_X_POS, TAG_Z_POS};
 use crate::region_file::BLOCK_SIZE;
 use flate2::read::{GzDecoder, ZlibDecoder};
 use std::fmt::{Display, Formatter};
@@ -13,6 +13,8 @@ type IOResult<T> = io::Result<T>;
 pub struct Chunk {
     pub length: u32,
     pub compression_type: u8,
+    pub x_pos: Option<i32>,
+    pub z_pos: Option<i32>,
 }
 
 impl Chunk {
@@ -26,6 +28,8 @@ impl Chunk {
         Ok(Self {
             compression_type,
             length,
+            x_pos: None,
+            z_pos: None,
         })
     }
 
@@ -55,6 +59,9 @@ impl Chunk {
                         return Err(ChunkScanError::MissingTag(tag));
                     }
                 }
+                self.x_pos = lvl_data[TAG_X_POS].as_int().cloned();
+                self.z_pos = lvl_data[TAG_Z_POS].as_int().cloned();
+
                 Ok(())
             } else {
                 Err(ChunkScanError::InvalidFormat(TAG_LEVEL))

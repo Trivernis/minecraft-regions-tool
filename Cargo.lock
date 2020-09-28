@@ -186,6 +186,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a357d28ed41a50f9c765dbfe56cbc04a64e53e5fc58ba79fbc34c10ef3df831f"
 
 [[package]]
+name = "enum-as-inner"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c5f0096a91d210159eceb2ff5e1c4da18388a170e1e3ce948aac9c8fdbbf595"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "env_logger"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -307,10 +319,11 @@ dependencies = [
 
 [[package]]
 name = "minecraft-regions-tool"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "byteorder",
  "colored",
+ "enum-as-inner",
  "env_logger",
  "flate2",
  "indicatif",

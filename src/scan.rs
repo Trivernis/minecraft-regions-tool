@@ -10,6 +10,7 @@ pub struct ScanStatistics {
     pub corrupted_nbt: u64,
     pub failed_to_read: u64,
     pub corrupted_compression: u64,
+    pub invalid_chunk_pointer: u64,
     pub shrunk_size: u64,
     pub unused_space: u64,
 }
@@ -23,6 +24,7 @@ impl ScanStatistics {
             missing_nbt: 0,
             corrupted_nbt: 0,
             corrupted_compression: 0,
+            invalid_chunk_pointer: 0,
             failed_to_read: 0,
             shrunk_size: 0,
             unused_space: 0,
@@ -40,6 +42,7 @@ impl Add for ScanStatistics {
         self.failed_to_read += rhs.failed_to_read;
         self.missing_nbt += rhs.missing_nbt;
         self.corrupted_compression += rhs.corrupted_compression;
+        self.invalid_chunk_pointer += rhs.invalid_chunk_pointer;
         self.corrupted_nbt += rhs.corrupted_nbt;
         self.unused_space += rhs.unused_space;
 
@@ -54,6 +57,7 @@ impl Display for ScanStatistics {
             "
             Total Chunks: {}
             Failed to Read: {}
+            Invalid chunk pointers: {}
             Chunks with invalid length: {}
             Chunks with invalid compression method: {}
             Chunks with missing nbt data: {}
@@ -62,6 +66,7 @@ impl Display for ScanStatistics {
             Unused space: {} KiB",
             self.total_chunks,
             self.failed_to_read,
+            self.invalid_chunk_pointer,
             self.invalid_length,
             self.invalid_compression_method,
             self.missing_nbt,

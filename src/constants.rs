@@ -26,12 +26,8 @@ pub mod tags {
         TAG_SECTIONS,
         TAG_LAST_UPDATE,
         TAG_INHABITED_TIME,
-        TAG_HEIGHTMAPS,
         TAG_ENTITIES,
         TAG_TILE_ENTITIES,
-        TAG_LIQUID_TICKS,
-        TAG_POST_PROCESSING,
         TAG_STATUS,
-        TAG_STRUCTURES,
     ];
 }
